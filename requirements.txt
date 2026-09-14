@@ -1,0 +1,31 @@
+# Core ML / audio
+laion-clap==1.1.7
+sentence-transformers==5.5.0
+torch==2.12.0+cpu
+torchaudio==2.11.0+cpu
+torchvision==0.27.0+cpu
+torchlibrosa==0.1.0
+
+# Audio processing
+librosa==0.11.0
+soundfile==0.13.1
+scipy==1.17.1
+numpy==1.26.4
+
+# Video processing
+opencv-python==4.13.0.92
+scenedetect==0.7
+moviepy==2.2.1
+
+# Qdrant
+qdrant-client==1.18.0
+
+# HuggingFace stack (pulled by CLAP + sentence-transformers)
+transformers==5.8.1
+tokenizers==0.22.2
+safetensors==0.7.0
+huggingface_hub==1.15.0
+
+# Utilities
+tqdm==4.67.3
+python-dotenv==1.2.2

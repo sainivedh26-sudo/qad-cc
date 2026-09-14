@@ -1,0 +1,20 @@
+# Rust build
+/target
+
+# Python
+__pycache__/
+*.pyc
+q/
+
+# Data & generated artifacts
+sounds/
+manifest*.jsonl
+queries*.jsonl
+timeline*.jsonl
+*.mp4
+*.m4a
+temp_audio*
+
+# Secrets
+.env
+.claude/

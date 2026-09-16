@@ -8,7 +8,7 @@ q/
 
 # Data & generated artifacts
 sounds/
-manifest*.jsonl
+#manifest*.jsonl
 queries*.jsonl
 timeline*.jsonl
 *.mp4

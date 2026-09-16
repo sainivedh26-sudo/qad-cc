@@ -137,19 +137,50 @@ def infer_audio_needs(
     environment: list[str],
     brightness_level: str,
 ) -> str:
-    """Heuristically determine what kind of audio this scene needs."""
-    if duration < 2.0:
+    """
+    Heuristically map scene properties to one of 10 audio types.
+    Order matters — more specific checks come first.
+    """
+    # Very short cut → stinger
+    if duration < 1.5:
         return "stinger"
-    if motion_score > 0.7:
-        return "impact" if duration < 4.0 else "transition_fx"
-    if duration < 3.5 and motion_score > 0.4:
+
+    # Fast + short → impact or transition
+    if motion_score > 0.75:
+        return "impact" if duration < 3.5 else "transition_fx"
+
+    # Medium motion + short → transition
+    if duration < 3.0 and motion_score > 0.45:
         return "transition_fx"
-    if any(m in mood for m in ("dark", "tense", "mysterious", "dramatic")):
+
+    # Dark / tense / horror → tension drone
+    if any(m in mood for m in ("dark", "tense")) and brightness_level in ("dark", "dim"):
+        return "tension"
+
+    # Mysterious / dramatic but not dark → music_bed underscore
+    if any(m in mood for m in ("mysterious", "dramatic")):
         return "music_bed"
-    if any(e in environment for e in ("outdoor", "nature", "sky", "night")):
+
+    # Outdoor nature / sky / green → ambience
+    if any(e in environment for e in ("nature", "outdoor", "sky")):
         return "ambience"
-    if duration > 6.0:
+
+    # Night scene → tension or ambience
+    if "night" in environment:
+        return "tension" if "dark" in mood else "ambience"
+
+    # Bright + energetic + golden → upbeat foley or ambience
+    if brightness_level == "bright" and "vibrant" in mood:
+        return "foley"
+
+    # Long + neutral → ambience bed
+    if duration > 7.0:
         return "ambience"
+
+    # Medium duration calm → music_bed
+    if duration > 4.0 and motion_score < 0.2:
+        return "music_bed"
+
     return "foley"
 
 
@@ -203,12 +234,16 @@ def build_scene_description(
 
     # Audio need
     type_phrases = {
-        "ambience":     "suitable for ambient background sound",
-        "music_bed":    "needs background music scoring",
-        "impact":       "needs sharp impact sound effect",
-        "transition_fx":"needs transition whoosh sound effect",
-        "stinger":      "needs short musical stinger",
-        "foley":        "needs foley sound effects",
+        "ambience":      "suitable for ambient background environment sound",
+        "music_bed":     "needs background music scoring underscore",
+        "impact":        "needs sharp impact hit explosion sound effect",
+        "transition_fx": "needs transition whoosh sweep sound effect",
+        "stinger":       "needs short sharp musical stinger sting",
+        "foley":         "needs foley object movement sound effects",
+        "creature":      "needs animal creature wildlife sound",
+        "vehicle":       "needs vehicle transport engine sound",
+        "human":         "needs human voice crowd people sound",
+        "tension":       "needs dark tense drone suspense atmosphere",
     }
     parts.append(type_phrases.get(needs, "needs sound effect"))
 

@@ -21,6 +21,10 @@ import torch
 import laion_clap
 from tqdm import tqdm
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[device] Using: {DEVICE}" + (
+    f"  ({torch.cuda.get_device_name(0)})" if DEVICE.type == "cuda" else ""
+))
 
 _clap_model = None
 
@@ -28,14 +32,16 @@ def get_clap():
     global _clap_model
     if _clap_model is None:
         print("Loading CLAP model...")
-        _clap_model = laion_clap.CLAP_Module(enable_fusion=False, amodel="HTSAT-tiny")
-        _clap_model.load_ckpt()
-        _clap_model.eval()
+        m = laion_clap.CLAP_Module(enable_fusion=False, amodel="HTSAT-tiny")
+        m.load_ckpt()
+        m = m.to(DEVICE)
+        m.eval()
+        _clap_model = m
     return _clap_model
 
 
 def embed_text_clap(texts: list[str]) -> list[list[float]]:
-    """Batch encode texts with CLAP text encoder → 512-dim each."""
+    """Batch encode texts with CLAP text encoder on GPU → 512-dim each."""
     model = get_clap()
     with torch.no_grad():
         embs = model.get_text_embedding(texts, use_tensor=True)

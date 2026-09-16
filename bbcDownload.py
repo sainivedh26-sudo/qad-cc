@@ -114,9 +114,10 @@ class Downloader:
                 filename = desc + suffix
                 filepath = Path("sounds") / folder / filename
 
-                # Skip if already valid
-                if is_valid_wav(filepath) and not self.recheck:
+                # Skip if already a valid WAV (regardless of --recheck)
+                if is_valid_wav(filepath):
                     continue
+                # File is missing or is an HTML placeholder — (re-)download it
 
                 url = BBC_CDN + location
                 samples.append((url, filepath))

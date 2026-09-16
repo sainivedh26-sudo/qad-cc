@@ -12,9 +12,13 @@ The ingestion side is a Python pipeline: BBC WAV files are chunked by type (ambi
 - A [Qdrant Cloud](https://cloud.qdrant.io) cluster (free tier works)
 - BBC Sound Effects library — run `python bbcDownload.py --max-secs 30` to fetch the short-form files first (~15 GB)
 
-```
+```bash
 pip install -r requirements.txt
-# PyTorch: swap +cpu for +cu121 if you have a CUDA GPU
+
+# GPU (recommended — 10-20x faster ingestion than CPU):
+# CUDA 11.8:  pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1:  pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
+# CUDA 12.4:  pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu124
 ```
 
 Copy `.env.example` to `.env` and fill in your cluster URLs and API key.

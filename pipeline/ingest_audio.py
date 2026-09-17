@@ -443,43 +443,106 @@ def build_manifest(
     text_vecs    = embed_text_batch(all_captions, batch_size=text_batch)
     print(f"  Caption embeddings done ({len(text_vecs)} x 384-dim)")
 
-    # ── Phase 2: per-file audio chunking + CLAP embedding ───────────────────
-    dedup_note = f"dedup={dedup_threshold}" if dedup_threshold < 1.0 else "dedup=off"
-    print(f"\nPhase 2: chunking + CLAP embedding  (batch={clap_batch}, device={DEVICE}, {dedup_note})...")
+    # ── Phase 2: cross-file batched chunking + CLAP embedding ───────────────
+    use_dedup  = 0.0 < dedup_threshold < 1.0
+    dedup_note = f"dedup>={dedup_threshold}" if use_dedup else "dedup=off"
+    print(f"\nPhase 2: cross-file batched CLAP embedding")
+    print(f"  device={DEVICE}  cross-batch={clap_batch}  {dedup_note}")
 
-    # Dedup index: audio_type → list of already-seen audio embeddings
-    # Pre-populate from existing manifest so resume works correctly
-    seen_vecs: dict[str, list[list[float]]] = {}
-    if skip_existing and os.path.exists(manifest_path) and dedup_threshold < 1.0:
-        print("  Loading existing embeddings for dedup check...")
+    # Dedup state: per audio_type numpy matrix of seen embeddings (fast cosine via matmul)
+    seen_mats: dict[str, np.ndarray] = {}   # audio_type -> (N, 512) float32
+
+    if use_dedup and skip_existing and os.path.exists(manifest_path):
+        print("  Loading existing embeddings for dedup...")
+        tmp: dict[str, list] = {}
         with open(manifest_path) as f:
             for line in f:
                 rec = json.loads(line)
-                atype = rec.get("audio_type", "foley")
-                seen_vecs.setdefault(atype, []).append(rec["audio_dense"])
-        total_seen = sum(len(v) for v in seen_vecs.values())
-        print(f"  Loaded {total_seen:,} existing embeddings into dedup index.")
+                tmp.setdefault(rec.get("audio_type", "foley"), []).append(rec["audio_dense"])
+        for atype, vecs in tmp.items():
+            seen_mats[atype] = np.array(vecs, dtype=np.float32)
+        print(f"  Dedup index: {sum(m.shape[0] for m in seen_mats.values()):,} existing chunks")
 
+    # ── Pending-chunk buffer: accumulate across files, flush when full ───────
+    # Each entry: (fr, text_vec, chunk_idx, start_sec, end_sec, chunk_y_22k)
+    pending: list[tuple] = []
     total_chunks  = 0
     dedup_dropped = 0
     skipped_files = 0
     error_counts: dict[str, int] = {}
     error_samples: list[str]     = []
 
+    def flush_buffer(out_f):
+        """Embed all pending chunks in one CLAP call, apply dedup, write records."""
+        nonlocal total_chunks, dedup_dropped
+        if not pending:
+            return
+
+        raw = [p[5] for p in pending]   # chunk_y_22k arrays
+        audio_vecs = embed_audio_batch(raw, SR, batch_size=len(raw))
+
+        for (fr, text_vec, chunk_idx, start_sec, end_sec, chunk_y), audio_vec in zip(pending, audio_vecs):
+            meta      = fr.row
+            track_id  = meta["chunk_id_prefix"]
+            atype     = fr.audio_type
+            av        = np.array(audio_vec, dtype=np.float32)
+
+            # ── Vectorised dedup ──────────────────────────────────────────
+            if use_dedup and atype in seen_mats and seen_mats[atype].shape[0] > 0:
+                mat   = seen_mats[atype]
+                norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9
+                norm_av = np.linalg.norm(av) + 1e-9
+                sims  = (mat / norms) @ (av / norm_av)
+                if sims.max() >= dedup_threshold:
+                    dedup_dropped += 1
+                    continue
+
+            # Add to dedup matrix
+            if use_dedup:
+                row = av.reshape(1, -1)
+                if atype in seen_mats:
+                    seen_mats[atype] = np.vstack([seen_mats[atype], row])
+                else:
+                    seen_mats[atype] = row
+
+            sparse_idx, sparse_val = build_sparse_vector(fr.tags, meta["description"])
+            feats = extract_acoustic_features(chunk_y, SR)
+
+            record = {
+                "chunk_id":       f"{track_id}_chunk_{chunk_idx:03d}",
+                "track_id":       track_id,
+                "start_sec":      round(start_sec, 3),
+                "end_sec":        round(end_sec, 3),
+                "duration":       round(end_sec - start_sec, 3),
+                "audio_type":     atype,
+                "category":       meta["category"],
+                "cd_name":        meta["cd_name"],
+                "description":    meta["description"],
+                "caption":        fr.caption,
+                "tags":           fr.tags[:20],
+                "source_path":    str(fr.wav_path.relative_to(ROOT)),
+                "source":         meta["source"],
+                "license":        meta["license"],
+                **feats,
+                "audio_dense":    audio_vec,
+                "text_dense":     text_vec,
+                "sparse_indices": sparse_idx,
+                "sparse_values":  sparse_val,
+            }
+            out_f.write(json.dumps(record) + "\n")
+            total_chunks += 1
+
+        pending.clear()
+
     with open(manifest_path, "a", encoding="utf-8") as out:
         pbar = tqdm(
             zip(files, text_vecs), total=len(files),
-            desc="Embedding files", unit="file", ncols=90,
+            desc="Loading files", unit="file", ncols=90,
             dynamic_ncols=True,
         )
         for fr, text_vec in pbar:
-            meta       = fr.row
-            track_id   = meta["chunk_id_prefix"]
-            description = meta["description"]
-            category   = meta["category"]
-            cd_name    = meta["cd_name"]
-            source     = meta["source"]
-            license_   = meta["license"]
+            meta     = fr.row
+            track_id = meta["chunk_id_prefix"]
 
             try:
                 y, file_sr = librosa.load(str(fr.wav_path), sr=None, mono=True)
@@ -488,80 +551,36 @@ def build_manifest(
                 etype = type(e).__name__
                 error_counts[etype] = error_counts.get(etype, 0) + 1
                 if len(error_samples) < 5:
-                    error_samples.append(
-                        f"  {fr.wav_path.name}: [{etype}] {str(e)[:120]}"
-                    )
+                    error_samples.append(f"  {fr.wav_path.name}: [{etype}] {str(e)[:100]}")
                 continue
 
             y_feat = librosa.resample(y, orig_sr=file_sr, target_sr=SR) if file_sr != SR else y
             params = get_chunk_params(fr.audio_type)
-            chunks = list(chunk_audio(y_feat, SR, params.window_sec, params.stride_sec))
-            if not chunks:
-                continue
 
-            # Filter already-done chunks (resume)
-            new_chunks = [
-                (idx, s, e, cy)
-                for idx, (s, e, cy) in enumerate(chunks)
-                if f"{track_id}_chunk_{idx:03d}" not in existing_ids
-            ]
-            if not new_chunks:
-                continue
+            for idx, (start_sec, end_sec, chunk_y) in enumerate(
+                chunk_audio(y_feat, SR, params.window_sec, params.stride_sec)
+            ):
+                cid = f"{track_id}_chunk_{idx:03d}"
+                if cid in existing_ids:
+                    continue
+                pending.append((fr, text_vec, idx, start_sec, end_sec, chunk_y))
 
-            raw_arrays = [c[3] for c in new_chunks]
-            audio_vecs = embed_audio_batch(raw_arrays, SR, batch_size=clap_batch)
-            sparse_idx, sparse_val = build_sparse_vector(fr.tags, description)
+                # Flush when cross-file batch is full
+                if len(pending) >= clap_batch:
+                    flush_buffer(out)
+                    pbar.set_postfix(chunks=total_chunks, dedup=dedup_dropped, err=skipped_files)
 
-            type_seen = seen_vecs.setdefault(fr.audio_type, [])
-
-            for (chunk_idx, start_sec, end_sec, chunk_y), audio_vec in zip(new_chunks, audio_vecs):
-                # ── Deduplication check ─────────────────────────────────────
-                if dedup_threshold < 1.0 and type_seen:
-                    # Sample at most 2000 existing vecs to keep check fast
-                    sample = type_seen[-2000:] if len(type_seen) > 2000 else type_seen
-                    max_sim = max(cosine_sim(audio_vec, sv) for sv in sample)
-                    if max_sim >= dedup_threshold:
-                        dedup_dropped += 1
-                        continue
-                type_seen.append(audio_vec)
-
-                chunk_id = f"{track_id}_chunk_{chunk_idx:03d}"
-                feats    = extract_acoustic_features(chunk_y, SR)
-
-                record = {
-                    "chunk_id":    chunk_id,
-                    "track_id":    track_id,
-                    "start_sec":   round(start_sec, 3),
-                    "end_sec":     round(end_sec, 3),
-                    "duration":    round(end_sec - start_sec, 3),
-                    "audio_type":  fr.audio_type,
-                    "category":    category,
-                    "cd_name":     cd_name,
-                    "description": description,
-                    "caption":     fr.caption,
-                    "tags":        fr.tags[:20],
-                    "source_path": str(fr.wav_path.relative_to(ROOT)),
-                    "source":      source,
-                    "license":     license_,
-                    **feats,
-                    "audio_dense":    audio_vec,
-                    "text_dense":     text_vec,
-                    "sparse_indices": sparse_idx,
-                    "sparse_values":  sparse_val,
-                }
-                out.write(json.dumps(record) + "\n")
-                total_chunks += 1
-
-            pbar.set_postfix(chunks=total_chunks, dedup=dedup_dropped, err=skipped_files)
+        flush_buffer(out)  # final partial batch
 
     print(f"\nDone.")
     print(f"  Chunks written   : {total_chunks:,}")
-    print(f"  Dedup dropped    : {dedup_dropped:,}  (similarity >= {dedup_threshold})")
+    if use_dedup:
+        print(f"  Dedup dropped    : {dedup_dropped:,}  (>= {dedup_threshold})")
     print(f"  Files skipped    : {skipped_files:,}")
     if error_counts:
-        print(f"\n  Error breakdown:")
+        print(f"\n  Errors:")
         for etype, count in sorted(error_counts.items(), key=lambda x: -x[1]):
-            print(f"    {etype:30s} x{count}")
+            print(f"    {etype}: {count}")
         for s in error_samples:
             print(s)
     return total_chunks
@@ -572,11 +591,10 @@ if __name__ == "__main__":
     parser.add_argument("--limit",     type=int,   default=None,  help="Max BBC CSV rows")
     parser.add_argument("--manifest",  type=str,   default="manifest.jsonl")
     parser.add_argument("--no-resume", action="store_true", help="Overwrite manifest")
-    parser.add_argument("--batch",     type=int,   default=8,     help="CLAP audio batch size")
+    parser.add_argument("--batch",     type=int,   default=32,    help="Cross-file CLAP batch size")
     parser.add_argument("--text-batch",type=int,   default=512,   help="Sentence-transformer batch size")
-    parser.add_argument("--dedup",     type=float, default=0.92,
-                        help="Cosine similarity threshold for near-duplicate suppression "
-                             "(0.0=off, 1.0=off, default=0.92)")
+    parser.add_argument("--dedup",     type=float, default=0.0,
+                        help="Dedup threshold 0.95-0.99 (0=off, default off)")
     args = parser.parse_args()
 
     if args.no_resume and os.path.exists(args.manifest):

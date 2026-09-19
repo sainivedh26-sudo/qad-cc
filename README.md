@@ -40,6 +40,9 @@ python pipeline/ingest_audio.py --manifest manifest.jsonl
 # 4. Upload to Qdrant (Rust, parallel gRPC)
 cargo run --release -- upload --manifest manifest.jsonl --batch 128 --workers 4
 
+----
+(infernce-part)
+
 # 5. Analyse your video and build scene queries
 python pipeline/analyze_video.py your_video.mp4 --queries queries.jsonl
 
@@ -83,3 +86,4 @@ python pipeline/compose_video.py --video your_video.mp4 --timeline timeline.json
 | `QDRANT_URL` | Python | REST endpoint, port 6333 |
 | `QDRANT_URL_GRPC` | Rust | gRPC endpoint, port 6334 |
 | `QDRANT_KEY` | Both | Qdrant Cloud API key |
+| `HF_API_KEY` | Both | Huggingface api key |

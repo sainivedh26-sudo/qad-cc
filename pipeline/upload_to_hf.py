@@ -24,6 +24,9 @@ import threading
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from tqdm import tqdm
 
 try:
@@ -31,6 +34,8 @@ try:
 except ImportError:
     print("ERROR: pip install -U huggingface_hub")
     sys.exit(1)
+
+_HF_TOKEN = os.environ.get("HF_API_KEY")
 
 ROOT         = Path(__file__).parent.parent
 SOUNDS_DIR   = ROOT / "sounds"
@@ -170,10 +175,11 @@ def main():
         print("\n[dry-run] Staging complete. Re-run without --dry-run to upload.")
         return
 
-    api = HfApi()
+    api = HfApi(token=_HF_TOKEN)
 
     # ── Create repo ──────────────────────────────────────────────────────────
-    create_repo(repo_id=args.repo, repo_type="dataset", exist_ok=True, private=False)
+    create_repo(repo_id=args.repo, repo_type="dataset",
+                exist_ok=True, private=True, token=_HF_TOKEN)
     print(f"\nRepo ready. Starting upload with {args.workers} workers...\n")
 
     # ── Start progress monitor ───────────────────────────────────────────────
@@ -190,6 +196,7 @@ def main():
             repo_type="dataset",
             folder_path=str(STAGING_DIR),
             num_workers=args.workers,
+            token=_HF_TOKEN,
         )
     finally:
         stop_evt.set()

@@ -18,20 +18,17 @@ export function Hero() {
         background:
           "radial-gradient(120% 80% at 50% 35%, transparent 0%, color-mix(in oklab, var(--void) 60%, transparent) 55%, var(--void) 90%)"
       }} />
-      <div className="absolute inset-0 bg-gradient-to-t from-[color:var(--void)] via-transparent to-[color:var(--void)]/40" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/0 to-black/95" />
       <div className="cinema-grain" />
 
       {/* Top bar */}
       <div className="relative z-20 flex items-center justify-between px-8 md:px-14 pt-8">
-        <div className="flex items-center gap-3">
-          <span className="size-2 rounded-full bg-[color:var(--resonance-cyan)] shadow-[0_0_14px_var(--resonance-cyan)]" />
-          <span className="font-display text-xl tracking-tight">QAD</span>
-          <span className="hidden md:inline text-[10px] tracking-cine text-white/35 ml-3">AI Audio Director</span>
-        </div>
+        <span className="font-display text-xl tracking-tight">QAD</span>
+        <span className="hidden md:inline text-[10px] tracking-cine text-white/35 ml-3">AI Audio Director</span>
       </div>
 
       {/* Title */}
-      <div className="relative z-10 px-8 md:px-14 pt-24 md:pt-32 max-w-7xl mx-auto">
+      <div className="relative z-10 px-8 md:px-14 pt-14 md:pt-16 max-w-8xl mx-auto">
         <div className="max-w-3xl">
           <motion.div
             initial={{ opacity: 0, y: 16 }}

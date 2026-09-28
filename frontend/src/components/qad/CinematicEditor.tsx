@@ -77,6 +77,7 @@ export function CinematicEditor() {
   const activeScene = scenes[activeIdx];
   const selectedAudioId = selections[activeScene.id];
   const selectedAudio = activeScene.recs.find((r) => r.id === selectedAudioId) ?? activeScene.recs[0];
+  const isExported = !!fileUrl?.includes("output_matched.mp4");
 
   useEffect(() => {
     const v = videoRef.current; if (!v) return;
@@ -149,7 +150,7 @@ export function CinematicEditor() {
     const audio = audioRef.current;
     if (!video || !audio) return;
 
-    if (!scored) {
+    if (!scored || isExported) {
       audio.pause();
       return;
     }
@@ -187,11 +188,11 @@ export function CinematicEditor() {
     } else {
       audio.pause();
     }
-  }, [playing, scored, activeIdx, selectedAudioId, activeScene]);
+  }, [playing, scored, activeIdx, selectedAudioId, activeScene, isExported]);
 
   // ── Layer audio: load sources whenever we switch to a new scene ─────────────
   useEffect(() => {
-    if (!scored) {
+    if (!scored || isExported) {
       layerAudioPool.current.forEach((a) => { if (a.src) a.pause(); });
       return;
     }
@@ -225,14 +226,14 @@ export function CinematicEditor() {
       layerAudioPool.current[i].pause();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScene.id, scored]);
+  }, [activeScene.id, scored, isExported]);
 
   // ── Layer audio: play/pause in lock-step with the video ──────────────────────
   useEffect(() => {
     const video = videoRef.current;
     const layerRecs = activeScene.layer_recs ?? [];
 
-    if (playing && scored && video) {
+    if (playing && scored && !isExported && video) {
       const offset = Math.max(0, video.currentTime - (activeScene.start_sec ?? 0));
       layerRecs.forEach((lr, idx) => {
         const a = layerAudioPool.current[idx];
@@ -245,7 +246,7 @@ export function CinematicEditor() {
       layerAudioPool.current.forEach((a) => { if (a.src) a.pause(); });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, scored, activeIdx]);
+  }, [playing, scored, activeIdx, isExported]);
 
   // ── Layer audio: real-time volume from sliders ────────────────────────────────
   useEffect(() => {
@@ -267,10 +268,10 @@ export function CinematicEditor() {
     // Setting volume to 0 silences instantly without pausing (mute UX)
     audio.volume = mute ? 0 : Math.min(1, Math.max(0, vol));
     // If we're playing and just unmuted, ensure audio is actually running
-    if (!mute && playing && scored && audio.paused && audio.src) {
+    if (!mute && playing && scored && !isExported && audio.paused && audio.src) {
       audio.play().catch(() => {});
     }
-  }, [primaryVolumes, sceneAudioMuted, activeScene.id, playing, scored]);
+  }, [primaryVolumes, sceneAudioMuted, activeScene.id, playing, scored, isExported]);
 
   // Auto-play the video and audio once the editor loads with real scenes
   useEffect(() => {
@@ -333,7 +334,7 @@ export function CinematicEditor() {
                     src={fileUrl}
                     className="absolute inset-0 w-full h-full object-contain"
                     playsInline
-                    muted
+                    muted={!isExported}
                     crossOrigin="anonymous"
                     onClick={togglePlay}
                   />

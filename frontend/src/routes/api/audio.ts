@@ -226,14 +226,35 @@ const resolverInstance = new AssetResolver();
 // Route Handler Definition
 // -------------------------------------------------------------
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+};
+
 export const Route = createFileRoute("/api/audio")({
   server: {
     handlers: {
+      OPTIONS: async () => {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+          },
+        });
+      },
       GET: async ({ request }) => {
         const url = new URL(request.url);
         const relativePath = url.searchParams.get("path");
         if (!relativePath) {
-          return new Response("Missing path", { status: 400 });
+          return new Response("Missing path", {
+            status: 400,
+            headers: corsHeaders,
+          });
         }
 
         // Ensure in-memory manifest is loaded and ready
@@ -283,6 +304,7 @@ export const Route = createFileRoute("/api/audio")({
             console.error(`[audio-api] Failed to fetch from Hugging Face (${hfResponse.status}): ${hfUrl}`);
             return new Response(`Failed to fetch from Hugging Face: ${hfResponse.statusText}`, {
               status: hfResponse.status,
+              headers: corsHeaders,
             });
           }
 
@@ -314,6 +336,11 @@ export const Route = createFileRoute("/api/audio")({
             responseHeaders.set("content-type", contentType);
           }
 
+          // Inject CORS headers
+          for (const [key, val] of Object.entries(corsHeaders)) {
+            responseHeaders.set(key, val);
+          }
+
           // Return stream back to the browser
           return new Response(hfResponse.body, {
             status: hfResponse.status,
@@ -323,7 +350,10 @@ export const Route = createFileRoute("/api/audio")({
 
         } catch (error: any) {
           console.error(`[audio-api] Connection error while fetching from Hugging Face:`, error);
-          return new Response(`Connection error: ${error.message || error}`, { status: 500 });
+          return new Response(`Connection error: ${error.message || error}`, {
+            status: 500,
+            headers: corsHeaders,
+          });
         }
       },
     },

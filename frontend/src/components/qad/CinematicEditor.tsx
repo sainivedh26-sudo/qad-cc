@@ -60,8 +60,10 @@ export function CinematicEditor() {
       setAudioEl(null);
       // Cleanup all layer audio
       layerAudioPool.current.forEach((a) => { a.pause(); a.src = ""; });
+      
     };
   }, []);
+    
 
   const activeIdx = (() => {
     if (scenes.length === 0) return 0;
@@ -197,30 +199,50 @@ export function CinematicEditor() {
       return;
     }
     const layerRecs = activeScene.layer_recs ?? [];
-
-    // Grow the pool if we have more layers than elements
     while (layerAudioPool.current.length < layerRecs.length) {
       const a = new Audio();
       a.crossOrigin = "anonymous";
       layerAudioPool.current.push(a);
     }
 
+    console.log("SCENE", activeScene.id);
+    console.log("LAYER RECS", layerRecs);
+
     layerRecs.forEach((lr, idx) => {
-      const a = layerAudioPool.current[idx];
-      if (!lr.source_path) return;
+    const a = layerAudioPool.current[idx];
+
+    if (!a) {
+      console.warn("Missing layer audio element", idx);
+      return;
+    }
+
+    if (!lr.source_path) return;
+
+    console.log("[LAYER]", idx, lr.audio_type, lr.source_path);
+
+    a.onloadeddata = () =>
+      console.log("[LOADED]", idx, lr.audio_type);
+
+    a.onplay = () =>
+      console.log("[PLAYING]", idx, lr.audio_type);
+
+    a.onerror = (e) =>
+      console.error("[ERROR]", idx, lr.audio_type, e);
+
       const src = `/api/audio?path=${encodeURIComponent(lr.source_path)}`;
+
       const expected = new URL(src, window.location.href).href;
       const current  = a.src ? new URL(a.src, window.location.href).href : "";
+
       if (current !== expected) {
         a.pause();
         a.src = src;
         a.load();
       }
-      // Apply default volume (use stored user value if available)
+
       const vol = layerVolumes[activeScene.id]?.[idx] ?? lr.volume;
       a.volume = Math.min(1, Math.max(0, vol));
     });
-
     // Silence any layer slots beyond what this scene needs
     for (let i = layerRecs.length; i < layerAudioPool.current.length; i++) {
       layerAudioPool.current[i].pause();
@@ -232,6 +254,21 @@ export function CinematicEditor() {
   useEffect(() => {
     const video = videoRef.current;
     const layerRecs = activeScene.layer_recs ?? [];
+        console.log(
+      "SCENE",
+      activeScene.id,
+      "LAYER COUNT",
+      layerRecs.length
+    );
+
+    layerRecs.forEach((lr, idx) => {
+      console.log(
+        "LAYER",
+        idx,
+        lr.audio_type,
+        lr.source_path
+      );
+    });
 
     if (playing && scored && !isExported && video) {
       const offset = Math.max(0, video.currentTime - (activeScene.start_sec ?? 0));
@@ -256,6 +293,12 @@ export function CinematicEditor() {
       if (!a) return;
       const vol = layerVolumes[activeScene.id]?.[idx] ?? lr.volume;
       a.volume = Math.min(1, Math.max(0, vol));
+      console.log(
+      "[VOLUME]",
+      idx,
+      lr.audio_type,
+      a.volume
+    );
     });
   }, [layerVolumes, activeScene.id, activeScene.layer_recs]);
 

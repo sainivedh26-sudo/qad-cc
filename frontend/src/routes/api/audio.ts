@@ -2,38 +2,28 @@ import { createFileRoute } from "@tanstack/react-router";
 import * as fs from "fs";
 import * as path from "path";
 
+
 function getHfApiKey(): string | undefined {
-  if (process.env.HF_API_KEY) {
-    return process.env.HF_API_KEY;
-  }
   try {
-    const pathsToCheck = [
-      path.resolve(process.cwd(), ".env"),
-      path.resolve(process.cwd(), "..", ".env"),
-      path.resolve(__dirname, ".env"),
-      path.resolve(__dirname, "..", ".env"),
-      path.resolve(__dirname, "..", "..", ".env"),
-      path.resolve(__dirname, "..", "..", "..", ".env"),
-    ];
-    for (const envPath of pathsToCheck) {
-      if (fs.existsSync(envPath)) {
-        const content = fs.readFileSync(envPath, "utf-8");
-        const match = content.match(/^HF_API_KEY\s*=\s*["']?(.*?)["']?$/m);
-        if (match) {
-          return match[1].trim();
-        }
-      }
-    }
+    const envPath = path.resolve(process.cwd(), "..", ".env");
+
+    console.log("[audio-api] Reading env from:", envPath);
+
+    const content = fs.readFileSync(envPath, "utf8");
+
+    const match = content.match(/^HF_API_KEY\s*=\s*(.+)$/m);
+
+    return match?.[1]?.trim();
   } catch (err) {
-    console.error("[audio-api] Failed to read .env file manually:", err);
+    console.error(err);
+    return undefined;
   }
-  return undefined;
 }
 
 // -------------------------------------------------------------
 // Manifest Indexing & Normalization Helper Functions
 // -------------------------------------------------------------
-
+console.log("ENV HF_API_KEY =", process.env.HF_API_KEY);
 function normalizeString(str: string): string {
   let normalized = str.toLowerCase();
   
@@ -299,7 +289,10 @@ export const Route = createFileRoute("/api/audio")({
         if (hfToken) {
           headers["Authorization"] = `Bearer ${hfToken}`;
         }
-
+        console.log(
+          "[audio-api] HF TOKEN:",
+          hfToken ? `FOUND (${hfToken.substring(0, 8)}...)` : "MISSING"
+          );
         try {
           const hfResponse = await fetch(hfUrl, { headers });
 

@@ -8,8 +8,6 @@ const getProjectRoot = () => {
   return path.resolve(process.cwd(), "..");
 };
 
-// Helper to load HF_API_KEY from process.env or the parent directory's .env file
-// Uses dynamic imports to prevent Vite client-side bundle compilation warnings
 async function getHfApiKey(): Promise<string | undefined> {
   if (process.env.HF_API_KEY) {
     return process.env.HF_API_KEY;
@@ -17,13 +15,21 @@ async function getHfApiKey(): Promise<string | undefined> {
   try {
     const fs = await import("fs");
     const path = await import("path");
-    const projectRoot = path.resolve(process.cwd(), "..");
-    const envPath = path.resolve(projectRoot, ".env");
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf-8");
-      const match = content.match(/^HF_API_KEY\s*=\s*(.*)$/m);
-      if (match) {
-        return match[1].trim();
+    const pathsToCheck = [
+      path.resolve(process.cwd(), ".env"),
+      path.resolve(process.cwd(), "..", ".env"),
+      path.resolve(__dirname, ".env"),
+      path.resolve(__dirname, "..", ".env"),
+      path.resolve(__dirname, "..", "..", ".env"),
+      path.resolve(__dirname, "..", "..", "..", ".env"),
+    ];
+    for (const envPath of pathsToCheck) {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, "utf-8");
+        const match = content.match(/^HF_API_KEY\s*=\s*["']?(.*?)["']?$/m);
+        if (match) {
+          return match[1].trim();
+        }
       }
     }
   } catch (err) {

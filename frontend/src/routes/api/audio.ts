@@ -2,19 +2,26 @@ import { createFileRoute } from "@tanstack/react-router";
 import * as fs from "fs";
 import * as path from "path";
 
-// Helper to load HF_API_KEY from process.env or the parent directory's .env file
 function getHfApiKey(): string | undefined {
   if (process.env.HF_API_KEY) {
     return process.env.HF_API_KEY;
   }
   try {
-    const projectRoot = path.resolve(process.cwd(), "..");
-    const envPath = path.resolve(projectRoot, ".env");
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf-8");
-      const match = content.match(/^HF_API_KEY\s*=\s*(.*)$/m);
-      if (match) {
-        return match[1].trim();
+    const pathsToCheck = [
+      path.resolve(process.cwd(), ".env"),
+      path.resolve(process.cwd(), "..", ".env"),
+      path.resolve(__dirname, ".env"),
+      path.resolve(__dirname, "..", ".env"),
+      path.resolve(__dirname, "..", "..", ".env"),
+      path.resolve(__dirname, "..", "..", "..", ".env"),
+    ];
+    for (const envPath of pathsToCheck) {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, "utf-8");
+        const match = content.match(/^HF_API_KEY\s*=\s*["']?(.*?)["']?$/m);
+        if (match) {
+          return match[1].trim();
+        }
       }
     }
   } catch (err) {
@@ -277,7 +284,9 @@ export const Route = createFileRoute("/api/audio")({
           resolvedPath = clean;
         }
 
-        const hfUrl = `https://huggingface.co/datasets/Pandago/qad-buc/resolve/main/${resolvedPath}`;
+        // Segment-encode the path to ensure spaces and special characters are safely escaped for HF CDN
+        const encodedPath = resolvedPath.split("/").map(encodeURIComponent).join("/");
+        const hfUrl = `https://huggingface.co/datasets/Pandago/qad-buc/resolve/main/${encodedPath}`;
 
         // Debug logging showing: requested name, resolved dataset path, final URL
         console.log(`[audio-api] DEBUG RESOLUTION:
@@ -291,12 +300,6 @@ export const Route = createFileRoute("/api/audio")({
           headers["Authorization"] = `Bearer ${hfToken}`;
         }
 
-        // Forward Range header if present to support scrubbing/seeking in browser
-        const rangeHeader = request.headers.get("range");
-        if (rangeHeader) {
-          headers["range"] = rangeHeader;
-        }
-
         try {
           const hfResponse = await fetch(hfUrl, { headers });
 
@@ -308,13 +311,15 @@ export const Route = createFileRoute("/api/audio")({
             });
           }
 
-          // Construct response headers, forwarding crucial streaming headers from HF
+          // Buffer the entire file into an ArrayBuffer to avoid any server-side chunked streaming or
+          // connection reset issues, allowing the browser's audio tags to play and seek perfectly.
+          const arrayBuffer = await hfResponse.arrayBuffer();
+
+          // Construct response headers, forwarding crucial metadata headers from HF
           const responseHeaders = new Headers();
           const headersToForward = [
             "content-type",
             "content-length",
-            "content-range",
-            "accept-ranges",
             "cache-control",
           ];
 
@@ -341,10 +346,9 @@ export const Route = createFileRoute("/api/audio")({
             responseHeaders.set(key, val);
           }
 
-          // Return stream back to the browser
-          return new Response(hfResponse.body, {
-            status: hfResponse.status,
-            statusText: hfResponse.statusText,
+          // Return full buffer response back to the browser
+          return new Response(arrayBuffer, {
+            status: 200,
             headers: responseHeaders,
           });
 

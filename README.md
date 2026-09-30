@@ -2,7 +2,15 @@
 
 Automatically matches royalty-free sound effects and music to every scene in a video — not by keyword search, but by understanding what is visually happening and retrieving the audio that emotionally and contextually fits. A video is split into scenes using PySceneDetect; each scene is analysed for motion energy, colour mood, and environment to produce a natural-language description. That description is encoded with LAION CLAP's text encoder (512-dim) and sent as a vector query against a Qdrant collection of BBC Sound Effects chunks, each embedded with CLAP's audio encoder. Because CLAP aligns audio and text in the same embedding space, the query crosses modalities directly — no tags, no keyword matching. Qdrant stores the 16 k-track library as named vectors (`audio_dense`, `text_dense`, `text_sparse`) with TurboQuantization bits4 for fast retrieval, and the Rust retrieval service queries all scenes in parallel over gRPC, assembling a per-second timeline of ranked audio candidates in seconds. The final step composites the matched clips onto the muted video with smooth fade-in/out transitions and renders an MP4.
 
-The ingestion side is a Python pipeline: BBC WAV files are chunked by type (ambience 5 s / music-bed 7 s / transition FX 1.5 s / foley 3 s / impact 2.5 s) with overlapping windows, CLAP audio embeddings and sentence-transformer text embeddings are extracted per chunk, and a JSONL manifest is written for a Rust bulk uploader that batches gRPC upserts at up to 4 parallel workers. The video side runs PySceneDetect → OpenCV optical flow for motion scoring → colour histogram mood analysis → CLAP text embedding → Rust retrieval → MoviePy compositor, all driven from the `pipeline/` scripts below.
+The ingestion side is a Python pipeline: BBC WAV files are chunked by type (ambience 5 s / music-bed 7 s / transition FX 1.5 s / foley 3 s / impact 2.5 s) with overlapping windows, CLAP audio embeddings and sentence-transformer text embeddings are extracted per chunk, and a JSONL manifest is written for a Rust bulk uploader that batches gRPC upserts at up to 4 parallel workers. Qad is developed to rely without a vlm or audio generation model, instead using the qdrant to it's full capability to solve a real-time issue from open source audios
+
+[![Open Walkthrough](https://img.shields.io/badge/Open-Walkthrough-blue?style=for-the-badge)](https://www.youtube.com/watch?v=_V2O2Z0WIvA)
+
+---
+
+# Architecture
+
+<img width="2847" height="1456" alt="shapes at 26-06-02 00 52 18" src="https://github.com/user-attachments/assets/71dbaa71-e60e-4966-9a52-af3fe7a895ed" />
 
 ---
 
@@ -87,3 +95,14 @@ python pipeline/compose_video.py --video your_video.mp4 --timeline timeline.json
 | `QDRANT_URL_GRPC` | Rust | gRPC endpoint, port 6334 |
 | `QDRANT_KEY` | Both | Qdrant Cloud API key |
 | `HF_API_KEY` | Both | Huggingface api key |
+
+
+
+------
+
+![Material wave loading](https://github.com/user-attachments/assets/a08255eb-9647-471d-9881-61871332249f)
+
+
+
+### Developed with ❤️ by [Sai Nivedh](https://github.com/SaiNIvedh26) ,  [Swetha](https://github.com/SWETHACS17) and  [Sudharsana Saravanan](https://github.com/SudharsanSaravanan)
+

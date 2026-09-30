@@ -8,8 +8,6 @@ const getProjectRoot = () => {
   return path.resolve(process.cwd(), "..");
 };
 
-// Helper to load HF_API_KEY from process.env or the parent directory's .env file
-// Uses dynamic imports to prevent Vite client-side bundle compilation warnings
 async function getHfApiKey(): Promise<string | undefined> {
   if (process.env.HF_API_KEY) {
     return process.env.HF_API_KEY;
@@ -17,13 +15,21 @@ async function getHfApiKey(): Promise<string | undefined> {
   try {
     const fs = await import("fs");
     const path = await import("path");
-    const projectRoot = path.resolve(process.cwd(), "..");
-    const envPath = path.resolve(projectRoot, ".env");
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf-8");
-      const match = content.match(/^HF_API_KEY\s*=\s*(.*)$/m);
-      if (match) {
-        return match[1].trim();
+    const pathsToCheck = [
+      path.resolve(process.cwd(), ".env"),
+      path.resolve(process.cwd(), "..", ".env"),
+      path.resolve(__dirname, ".env"),
+      path.resolve(__dirname, "..", ".env"),
+      path.resolve(__dirname, "..", "..", ".env"),
+      path.resolve(__dirname, "..", "..", "..", ".env"),
+    ];
+    for (const envPath of pathsToCheck) {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, "utf-8");
+        const match = content.match(/^HF_API_KEY\s*=\s*["']?(.*?)["']?$/m);
+        if (match) {
+          return match[1].trim();
+        }
       }
     }
   } catch (err) {
@@ -127,12 +133,15 @@ class ExportAssetResolver {
       return this.resolutionCache.get(chunkId)!;
     }
 
+    // Clean the direct source_path — strip backslashes and leading "sounds/" segments.
+    // The Qdrant payload source_path is already the correct HF path, just prefixed.
+    let directPath = fallbackPath.replace(/\\/g, "/");
+    while (directPath.startsWith("sounds/")) {
+      directPath = directPath.substring(7);
+    }
+
     if (!this.isLoaded) {
-      let clean = fallbackPath.replace(/\\/g, "/");
-      while (clean.startsWith("sounds/")) {
-        clean = clean.substring(7);
-      }
-      return clean;
+      return directPath;
     }
 
     // Strip chunk suffix: e.g. "fs_glitter_drone_aif_169372_chunk_015" -> "fs_glitter_drone_aif_169372"
@@ -141,44 +150,47 @@ class ExportAssetResolver {
     let resolved: string | undefined = undefined;
 
     if (trackId.startsWith("fs_")) {
-      // FreeSound match logic
+      // ── Step 1: exact normalized-name match ─────────────────────────────
       const fsTrack = trackId.substring(3); // strip "fs_"
       const normalizedTrack = normalizeString(fsTrack);
 
-      // Exact match normalized basename
-      const match = this.manifest.find((m) => m.cleanBasename === normalizedTrack);
-      if (match) {
-        resolved = match.filename;
-      } else {
-        // Fallback to substring
-        const subMatch = this.manifest.find(
-          (m) => m.cleanBasename.includes(normalizedTrack) || normalizedTrack.includes(m.cleanBasename)
-        );
-        if (subMatch) {
-          resolved = subMatch.filename;
+      resolved = this.manifest.find((m) => m.cleanBasename === normalizedTrack)?.filename;
+
+      // ── Step 2: match by FreeSound numeric ID extracted from source_path ─
+      // e.g. "sounds/FreeSound/tension/Lost Valley.612377.mp3" → id "612377"
+      if (!resolved) {
+        const idMatch = directPath.match(/\.(\d{5,8})\.(mp3|wav|aif|aiff|ogg|flac)$/i);
+        if (idMatch) {
+          const fsId = idMatch[1];
+          resolved = this.manifest.find((m) => m.filename.includes(`.${fsId}.`))?.filename;
         }
       }
-    } else {
-      // BBC Sound Effects match logic (numeric track ID match in filename)
-      const match = this.manifest.find((m) => m.filename.includes(trackId));
-      if (match) {
-        resolved = match.filename;
+
+      // ── Step 3: substring match — skip entries with trivial cleanBasename ─
+      // (Files like "65421.wav.506168.mp3" normalise to "" and match everything)
+      if (!resolved) {
+        resolved = this.manifest.find(
+          (m) =>
+            m.cleanBasename.length >= 4 &&
+            (m.cleanBasename.includes(normalizedTrack) ||
+              normalizedTrack.includes(m.cleanBasename))
+        )?.filename;
       }
+
+    } else {
+      // ── BBC: match by the numeric track ID embedded in the filename ──────
+      resolved = this.manifest.find((m) => m.filename.includes(trackId))?.filename;
     }
 
     if (resolved) {
-      console.log(`[actions-resolver] Resolved chunk ID "${chunkId}" to HF dataset path "${resolved}"`);
       this.resolutionCache.set(chunkId, resolved);
       return resolved;
     }
 
-    // Fallback: clean original path
-    console.warn(`[actions-resolver] Warning: Could not resolve chunk ID "${chunkId}". Using clean fallback: "${fallbackPath}"`);
-    let clean = fallbackPath.replace(/\\/g, "/");
-    while (clean.startsWith("sounds/")) {
-      clean = clean.substring(7);
-    }
-    return clean;
+    // ── Final fallback: the cleaned source_path is already correct ─────────
+    // (The Qdrant payload contains the real HF path — just trust it.)
+    this.resolutionCache.set(chunkId, directPath);
+    return directPath;
   }
 }
 
@@ -190,6 +202,7 @@ interface TimelineEntry {
   end_sec: number;
   duration: number;
   needs: string;
+  muted?: boolean;
   matches: Array<{
     chunk_id: string;
     track_id: string;
@@ -200,6 +213,19 @@ interface TimelineEntry {
     caption: string;
     source_path: string;
     energy: number;
+    volume?: number;
+  }>;
+  layer_matches?: Array<{
+    layer: number;
+    audio_type: string;
+    chunk_id: string;
+    source_path: string;
+    chunk_start_sec: number;
+    chunk_end_sec: number;
+    caption: string;
+    score: number;
+    energy: number;
+    volume: number;
   }>;
 }
 
@@ -245,6 +271,12 @@ export const processVideoServer = createServerFn({ method: "POST" })
       console.log("[server] Running Step 3/3: retrieving audio from Qdrant via Rust component...");
       execSync(
         `cargo run --release -- retrieve --queries queries_embedded.jsonl --top 5 --output timeline.jsonl`,
+        { cwd: projectRoot, stdio: "inherit" }
+      );
+
+      console.log("[server] Running Step 3.5/3: enriching timeline with complementary audio layers...");
+      execSync(
+        `python pipeline/layer_audio.py --timeline timeline.jsonl --queries queries_embedded.jsonl`,
         { cwd: projectRoot, stdio: "inherit" }
       );
 
@@ -294,6 +326,26 @@ export const processVideoServer = createServerFn({ method: "POST" })
         // Generate a friendly label based on index and need
         const labelStr = entry.needs.charAt(0).toUpperCase() + entry.needs.slice(1);
 
+        // Parse complementary layers — resolve source_path to exact HF path so
+        // the browser can play layers live via /api/audio (same as primary recs)
+        const layer_recs = (entry.layer_matches ?? []).map((lm: any) => {
+          const hfLayerPath = lm.chunk_id
+            ? exportResolver.resolve(lm.chunk_id, lm.source_path ?? "")
+            : (lm.source_path ?? "");
+          return {
+            layer:           lm.layer ?? 1,
+            audio_type:      lm.audio_type ?? "",
+            chunk_id:        lm.chunk_id ?? "",
+            source_path:     hfLayerPath,           // ← resolved for /api/audio
+            chunk_start_sec: lm.chunk_start_sec ?? 0,
+            chunk_end_sec:   lm.chunk_end_sec ?? 0,
+            caption:         lm.caption ?? "",
+            score:           lm.score ?? 0,
+            energy:          lm.energy ?? 0.5,
+            volume:          lm.volume ?? 0.38,     // ← matches new layer_audio.py defaults
+          };
+        });
+
         return {
           id: index,
           label: `${labelStr} Scene`,
@@ -301,6 +353,7 @@ export const processVideoServer = createServerFn({ method: "POST" })
           tone: labelStr,
           energy: entry.matches[0]?.energy || 0.5,
           recs: recs,
+          layer_recs: layer_recs.length > 0 ? layer_recs : undefined,
           start_sec: entry.start_sec,
           end_sec: entry.end_sec,
         };
@@ -319,8 +372,15 @@ export const processVideoServer = createServerFn({ method: "POST" })
   });
 
 export const composeVideoServer = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => data as Record<number, string>)
-  .handler(async ({ data: selections }) => {
+  .inputValidator((data: unknown) => data as {
+    selections: Record<number, string>;
+    layerVolumes: Record<number, number[]>;
+    stemVolumes: { vocals: number; noVocals: number };
+    primaryVolumes: Record<number, number>;
+    sceneAudioMuted: Record<number, boolean>;
+  })
+  .handler(async ({ data }) => {
+    const { selections, layerVolumes, stemVolumes, primaryVolumes, sceneAudioMuted } = data;
     console.log("[server] Starting composeVideoServer with selections:", selections);
     
     const projectRoot = getProjectRoot();
@@ -353,6 +413,32 @@ export const composeVideoServer = createServerFn({ method: "POST" })
           m.source_path = exportResolver.resolve(m.chunk_id, m.source_path);
         }
 
+        // Resolve layer_match source_paths to exact HF paths (same as primary matches)
+        if (entry.layer_matches) {
+          entry.layer_matches.forEach((lm: any) => {
+            if (lm.chunk_id) {
+              lm.source_path = exportResolver.resolve(lm.chunk_id, lm.source_path);
+            }
+          });
+        }
+
+        // Apply user-adjusted layer volumes
+        if (entry.layer_matches && layerVolumes[index]) {
+          entry.layer_matches.forEach((lm: any, lIdx: number) => {
+            const userVol = layerVolumes[index]?.[lIdx];
+            if (userVol !== undefined) lm.volume = userVol;
+          });
+        }
+
+        // Apply per-scene mute flag
+        (entry as any).muted = !!sceneAudioMuted[index];
+
+        // Apply per-scene primary volume (default 0.62 matches layer_audio.py PRIMARY_VOLUME)
+        if (entry.matches.length > 0) {
+          const vol = primaryVolumes[index] ?? 0.62;
+          (entry.matches[0] as any).volume = vol;
+        }
+
         if (selectedId && entry.matches.length > 0) {
           // Find the index of the selected match
           const matchIndex = entry.matches.findIndex((m) => m.chunk_id === selectedId);
@@ -375,10 +461,10 @@ export const composeVideoServer = createServerFn({ method: "POST" })
       fs.writeFileSync(outputTimelinePath, customizedLines.join("\n") + "\n", "utf-8");
       console.log(`[server] Customized timeline written to ${outputTimelinePath}`);
 
-      // Run compose_video.py to render the final video
+      // Run compose_video.py — original audio muted (stems disabled for now)
       console.log("[server] Running video compositor (compose_video.py)...");
       execSync(
-        `python pipeline/compose_video.py --video frontend/public/input_video.mp4 --timeline timeline.jsonl --out frontend/public/output_matched.mp4`,
+        `python pipeline/compose_video.py --video frontend/public/input_video.mp4 --timeline timeline.jsonl --out frontend/public/output_matched.mp4 --vocals-vol 0 --novocals-vol 0`,
         { cwd: projectRoot, stdio: "inherit" }
       );
 

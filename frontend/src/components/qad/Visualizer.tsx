@@ -28,6 +28,28 @@ export function Visualizer({ mediaEl, active = true }: { mediaEl?: HTMLMediaElem
     } catch { /* element already wired or browser blocked */ }
   }, [mediaEl]);
 
+  // Automatically resume AudioContext on user gestures to bypass browser autoplay/silent suspension
+  useEffect(() => {
+    const resume = () => {
+      if (audioCtx.current && audioCtx.current.state === "suspended") {
+        audioCtx.current.resume().catch(() => {});
+      }
+    };
+    window.addEventListener("click", resume);
+    window.addEventListener("touchstart", resume);
+    return () => {
+      window.removeEventListener("click", resume);
+      window.removeEventListener("touchstart", resume);
+    };
+  }, []);
+
+  // Try resuming when the visualization becomes active
+  useEffect(() => {
+    if (active && audioCtx.current && audioCtx.current.state === "suspended") {
+      audioCtx.current.resume().catch(() => {});
+    }
+  }, [active]);
+
   useEffect(() => {
     const c = canvas.current; if (!c) return;
     const ctx = c.getContext("2d"); if (!ctx) return;

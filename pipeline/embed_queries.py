@@ -11,6 +11,8 @@ Usage:
 
 import argparse
 import json
+import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -18,10 +20,31 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import torch
+
+# ── Safe torch.load patch ──────────────────────────────────────────────────────
+# laion_clap calls torch.load() without map_location which causes a fatal
+# Windows CUDA crash (exit 0xC0000005 / STATUS_ACCESS_VIOLATION) when the
+# checkpoint was saved on a different CUDA device than what's currently live.
+# We monkey-patch torch.load before importing laion_clap so every downstream
+# checkpoint restore always lands on CPU first; the model is moved to the
+# target device afterwards.
+_orig_torch_load = torch.load
+
+def _cpu_safe_torch_load(f, map_location=None, **kwargs):
+    # Force CPU restore; move to target device after model.to(DEVICE)
+    if map_location is None:
+        map_location = "cpu"
+    return _orig_torch_load(f, map_location=map_location, **kwargs)
+
+torch.load = _cpu_safe_torch_load
+# ──────────────────────────────────────────────────────────────────────────────
+
 import laion_clap
 from tqdm import tqdm
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Default to CUDA if available; set env var CLAP_DEVICE=cpu to force CPU.
+_device_str = os.environ.get("CLAP_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device(_device_str)
 print(f"[device] Using: {DEVICE}" + (
     f"  ({torch.cuda.get_device_name(0)})" if DEVICE.type == "cuda" else ""
 ))
@@ -33,7 +56,9 @@ def get_clap():
     if _clap_model is None:
         print("Loading CLAP model...")
         m = laion_clap.CLAP_Module(enable_fusion=False, amodel="HTSAT-tiny")
+        # load_ckpt now calls our patched torch.load → always restores to CPU
         m.load_ckpt()
+        # Then move to target device (CUDA or CPU) — safe because weights are on CPU
         m = m.to(DEVICE)
         m.eval()
         _clap_model = m

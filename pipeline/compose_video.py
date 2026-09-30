@@ -29,12 +29,12 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import soundfile as sf
-from moviepy import (
+from moviepy.editor import (
     VideoFileClip,
     AudioFileClip,
     CompositeAudioClip,
-    AudioArrayClip,
 )
+from moviepy.audio.AudioClip import AudioArrayClip
 from tqdm import tqdm
 
 # HF fetcher — all local audio access is replaced by this
@@ -127,9 +127,15 @@ def compose(video_path: str, timeline_path: str, output_path: str) -> None:
 
     # ── Collect every unique source_path needed ──────────────────────────────
     all_source_paths: list[str] = []
+
     for entry in entries:
         if entry.get("matches"):
             sp = entry["matches"][0].get("source_path", "")
+            if sp:
+                all_source_paths.append(sp)
+
+        for layer in entry.get("layer_matches", []):
+            sp = layer.get("source_path", "")
             if sp:
                 all_source_paths.append(sp)
 
@@ -159,27 +165,71 @@ def compose(video_path: str, timeline_path: str, output_path: str) -> None:
                 skipped += 1
                 continue
 
-            top         = entry["matches"][0]
-            source_path = top["source_path"]
-            chunk_start = top["chunk_start_sec"]
-            chunk_end   = top["chunk_end_sec"]
+            scene_mix = None
 
-            local_path = local_map.get(source_path)
-            if local_path is None:
-                skipped += 1
-                continue
+    # ---------- PRIMARY ----------
+    top = entry["matches"][0]
 
-            samples = load_chunk_audio(
-                str(local_path), chunk_start, chunk_end, scene_dur, target_sr
-            )
-            if samples is None:
-                skipped += 1
-                continue
+    local_path = local_map.get(top["source_path"])
 
-            ac = AudioArrayClip(samples, fps=target_sr)
-            ac = ac.with_start(scene_start)
-            audio_clips.append(ac)
-            matched += 1
+    if local_path:
+        primary = load_chunk_audio(
+            str(local_path),
+            top["chunk_start_sec"],
+            top["chunk_end_sec"],
+            scene_dur,
+            target_sr,
+        )
+
+        if primary is not None:
+            primary_vol = top.get("volume", 0.62)
+            scene_mix = primary * primary_vol
+
+    # ---------- LAYERS ----------
+    for layer in entry.get("layer_matches", []):
+
+        local_path = local_map.get(layer["source_path"])
+
+        if not local_path:
+            continue
+
+        layer_audio = load_chunk_audio(
+            str(local_path),
+            layer["chunk_start_sec"],
+            layer["chunk_end_sec"],
+            scene_dur,
+            target_sr,
+        )
+
+        if layer_audio is None:
+            continue
+
+        layer_vol = layer.get("volume", 0.35)
+
+        if scene_mix is None:
+            scene_mix = layer_audio * layer_vol
+        else:
+            scene_mix += layer_audio * layer_vol
+
+# ---------- NORMALIZE ----------
+        if scene_mix is None:
+            skipped += 1
+            continue
+        print(
+            f"Scene {entry['scene_id']} "
+            f"primary=1 "
+            f"layers={len(entry.get('layer_matches', []))}"
+        )
+        peak = np.max(np.abs(scene_mix))
+
+        if peak > 1.0:
+            scene_mix = scene_mix / peak
+
+        ac = AudioArrayClip(scene_mix.astype(np.float32), fps=target_sr)
+        ac = ac.set_start(scene_start)
+
+        audio_clips.append(ac)
+        matched += 1
 
         print(f"Matched : {matched} scenes  |  skipped: {skipped}")
 
@@ -189,9 +239,9 @@ def compose(video_path: str, timeline_path: str, output_path: str) -> None:
 
         # Composite all audio tracks over the full video duration
         composite_audio = CompositeAudioClip(audio_clips)
-        composite_audio = composite_audio.with_duration(video_duration)
+        composite_audio = composite_audio.set_duration(video_duration)
 
-        final = clip.with_audio(composite_audio)
+        final = clip.set_audio(composite_audio)
 
         print(f"Rendering -> {output_path} ...")
         final.write_videofile(

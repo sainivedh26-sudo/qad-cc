@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Play, Pause, SkipBack, SkipForward, RotateCcw, Maximize2, Check, X, Repeat } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, RotateCcw, Maximize2, Check, X, Repeat, Layers, Volume2, VolumeX } from "lucide-react";
 import thumbs from "@/assets/thumbs-grid.jpg";
 import { useQad } from "./QadContext";
 import { Visualizer } from "./Visualizer";
@@ -18,6 +18,9 @@ export function CinematicEditor() {
     fileUrl, scored, toggleScore,
     selections, acceptedScenes, acceptAudio, rejectAudio, selectAudio,
     rejectingScene, closeReject, scenes,
+    layerVolumes, setLayerVolume,
+    primaryVolumes, setPrimaryVolume,
+    sceneAudioMuted, toggleSceneMute,
   } = useQad();
 
   const handleReject = () => {
@@ -42,6 +45,8 @@ export function CinematicEditor() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  // Pool of HTMLAudioElements for complementary layers (L2, L3, …)
+  const layerAudioPool = useRef<HTMLAudioElement[]>([]);
 
   // Initialize a single global HTMLAudioElement instance for this editor session
   useEffect(() => {
@@ -53,8 +58,12 @@ export function CinematicEditor() {
       audio.pause();
       audioRef.current = null;
       setAudioEl(null);
+      // Cleanup all layer audio
+      layerAudioPool.current.forEach((a) => { a.pause(); a.src = ""; });
+      
     };
   }, []);
+    
 
   const activeIdx = (() => {
     if (scenes.length === 0) return 0;
@@ -70,6 +79,7 @@ export function CinematicEditor() {
   const activeScene = scenes[activeIdx];
   const selectedAudioId = selections[activeScene.id];
   const selectedAudio = activeScene.recs.find((r) => r.id === selectedAudioId) ?? activeScene.recs[0];
+  const isExported = !!fileUrl?.includes("output_matched.mp4");
 
   useEffect(() => {
     const v = videoRef.current; if (!v) return;
@@ -82,10 +92,18 @@ export function CinematicEditor() {
     
     // Lock seeking and seeked events to keep audio frame-perfectly in sync
     const onSeeking = () => {
-      if (audioRef.current && activeScene && activeScene.start_sec !== undefined && selectedAudio?.chunk_start_sec !== undefined) {
-        const offset = v.currentTime - activeScene.start_sec;
-        audioRef.current.currentTime = selectedAudio.chunk_start_sec + Math.max(0, offset);
+      const offset = Math.max(0, v.currentTime - (activeScene?.start_sec ?? 0));
+      if (audioRef.current && selectedAudio?.chunk_start_sec !== undefined) {
+        audioRef.current.currentTime = selectedAudio.chunk_start_sec + offset;
       }
+      // Sync all layer audio elements too
+      const layerRecs = activeScene?.layer_recs ?? [];
+      layerRecs.forEach((lr, idx) => {
+        const a = layerAudioPool.current[idx];
+        if (a && a.src) {
+          a.currentTime = (lr.chunk_start_sec ?? 0) + offset;
+        }
+      });
     };
 
     v.addEventListener("timeupdate", onTime);
@@ -134,7 +152,7 @@ export function CinematicEditor() {
     const audio = audioRef.current;
     if (!video || !audio) return;
 
-    if (!scored) {
+    if (!scored || isExported) {
       audio.pause();
       return;
     }
@@ -172,7 +190,131 @@ export function CinematicEditor() {
     } else {
       audio.pause();
     }
-  }, [playing, scored, activeIdx, selectedAudioId, activeScene]);
+  }, [playing, scored, activeIdx, selectedAudioId, activeScene, isExported]);
+
+  // ── Layer audio: load sources whenever we switch to a new scene ─────────────
+  useEffect(() => {
+    if (!scored || isExported) {
+      layerAudioPool.current.forEach((a) => { if (a.src) a.pause(); });
+      return;
+    }
+    const layerRecs = activeScene.layer_recs ?? [];
+    while (layerAudioPool.current.length < layerRecs.length) {
+      const a = new Audio();
+      a.crossOrigin = "anonymous";
+      layerAudioPool.current.push(a);
+    }
+
+    console.log("SCENE", activeScene.id);
+    console.log("LAYER RECS", layerRecs);
+
+    layerRecs.forEach((lr, idx) => {
+    const a = layerAudioPool.current[idx];
+
+    if (!a) {
+      console.warn("Missing layer audio element", idx);
+      return;
+    }
+
+    if (!lr.source_path) return;
+
+    console.log("[LAYER]", idx, lr.audio_type, lr.source_path);
+
+    a.onloadeddata = () =>
+      console.log("[LOADED]", idx, lr.audio_type);
+
+    a.onplay = () =>
+      console.log("[PLAYING]", idx, lr.audio_type);
+
+    a.onerror = (e) =>
+      console.error("[ERROR]", idx, lr.audio_type, e);
+
+      const src = `/api/audio?path=${encodeURIComponent(lr.source_path)}`;
+
+      const expected = new URL(src, window.location.href).href;
+      const current  = a.src ? new URL(a.src, window.location.href).href : "";
+
+      if (current !== expected) {
+        a.pause();
+        a.src = src;
+        a.load();
+      }
+
+      const vol = layerVolumes[activeScene.id]?.[idx] ?? lr.volume;
+      a.volume = Math.min(1, Math.max(0, vol));
+    });
+    // Silence any layer slots beyond what this scene needs
+    for (let i = layerRecs.length; i < layerAudioPool.current.length; i++) {
+      layerAudioPool.current[i].pause();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScene.id, scored, isExported]);
+
+  // ── Layer audio: play/pause in lock-step with the video ──────────────────────
+  useEffect(() => {
+    const video = videoRef.current;
+    const layerRecs = activeScene.layer_recs ?? [];
+        console.log(
+      "SCENE",
+      activeScene.id,
+      "LAYER COUNT",
+      layerRecs.length
+    );
+
+    layerRecs.forEach((lr, idx) => {
+      console.log(
+        "LAYER",
+        idx,
+        lr.audio_type,
+        lr.source_path
+      );
+    });
+
+    if (playing && scored && !isExported && video) {
+      const offset = Math.max(0, video.currentTime - (activeScene.start_sec ?? 0));
+      layerRecs.forEach((lr, idx) => {
+        const a = layerAudioPool.current[idx];
+        if (!a || !a.src) return;
+        const target = (lr.chunk_start_sec ?? 0) + offset;
+        if (Math.abs(a.currentTime - target) > 0.25) a.currentTime = target;
+        a.play().catch(() => {});
+      });
+    } else {
+      layerAudioPool.current.forEach((a) => { if (a.src) a.pause(); });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, scored, activeIdx, isExported]);
+
+  // ── Layer audio: real-time volume from sliders ────────────────────────────────
+  useEffect(() => {
+    const layerRecs = activeScene.layer_recs ?? [];
+    layerRecs.forEach((lr, idx) => {
+      const a = layerAudioPool.current[idx];
+      if (!a) return;
+      const vol = layerVolumes[activeScene.id]?.[idx] ?? lr.volume;
+      a.volume = Math.min(1, Math.max(0, vol));
+      console.log(
+      "[VOLUME]",
+      idx,
+      lr.audio_type,
+      a.volume
+    );
+    });
+  }, [layerVolumes, activeScene.id, activeScene.layer_recs]);
+
+  // ── Primary audio: real-time volume + mute from controls ─────────────────────
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const vol  = primaryVolumes[activeScene.id] ?? 0.62;
+    const mute = !!sceneAudioMuted[activeScene.id];
+    // Setting volume to 0 silences instantly without pausing (mute UX)
+    audio.volume = mute ? 0 : Math.min(1, Math.max(0, vol));
+    // If we're playing and just unmuted, ensure audio is actually running
+    if (!mute && playing && scored && !isExported && audio.paused && audio.src) {
+      audio.play().catch(() => {});
+    }
+  }, [primaryVolumes, sceneAudioMuted, activeScene.id, playing, scored, isExported]);
 
   // Auto-play the video and audio once the editor loads with real scenes
   useEffect(() => {
@@ -235,7 +377,7 @@ export function CinematicEditor() {
                     src={fileUrl}
                     className="absolute inset-0 w-full h-full object-contain"
                     playsInline
-                    muted={!scored}
+                    muted={!isExported}
                     crossOrigin="anonymous"
                     onClick={togglePlay}
                   />
@@ -379,6 +521,25 @@ export function CinematicEditor() {
                   )}
                 </AnimatePresence>
               </div>
+
+              {/* AUDIO STACK — all layers unified ───────────────────────── */}
+              <div className="hairline" />
+              <AudioStackPanel
+                playing={playing && scored}
+                primaryTitle={selectedAudio.title}
+                primaryType={selectedAudio.mood}
+                primaryMuted={!!sceneAudioMuted[activeScene.id]}
+                primaryVolume={primaryVolumes[activeScene.id] ?? 0.62}
+                onPrimaryMute={() => toggleSceneMute(activeScene.id)}
+                onPrimaryVolume={(v) => setPrimaryVolume(activeScene.id, v)}
+                layerRecs={activeScene.layer_recs ?? []}
+                layerVolumes={
+                  layerVolumes[activeScene.id] ??
+                  (activeScene.layer_recs ?? []).map((l) => l.volume ?? 0.38)
+                }
+                onLayerVolume={(idx, v) => setLayerVolume(activeScene.id, idx, v)}
+              />
+
             </aside>
           </div>
 
@@ -744,18 +905,219 @@ function Meta({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function MiniWave({ className, active = false }: { className?: string; active?: boolean }) {
+// ── Audio Stack Panel — unified L1 + L2 + L3 view ─────────────────────────────
+import type { LayerRec } from "./qad-data";
+
+const LAYER_TYPE_COLOR: Record<string, string> = {
+  ambience:      "var(--resonance-cyan)",
+  foley:         "#a78bfa",
+  music_bed:     "#f59e0b",
+  tension:       "#ef4444",
+  creature:      "#34d399",
+  vehicle:       "#60a5fa",
+  human:         "#f472b6",
+  impact:        "#fb923c",
+  transition_fx: "#94a3b8",
+  stinger:       "#fde68a",
+};
+
+function AudioStackPanel({
+  playing,
+  primaryTitle,
+  primaryType,
+  primaryMuted,
+  primaryVolume,
+  onPrimaryMute,
+  onPrimaryVolume,
+  layerRecs,
+  layerVolumes,
+  onLayerVolume,
+}: {
+  playing: boolean;
+  primaryTitle: string;
+  primaryType: string;          // e.g. "Ambience"
+  primaryMuted: boolean;
+  primaryVolume: number;
+  onPrimaryMute: () => void;
+  onPrimaryVolume: (v: number) => void;
+  layerRecs: LayerRec[];
+  layerVolumes: number[];
+  onLayerVolume: (idx: number, v: number) => void;
+}) {
+  const totalLayers = 1 + layerRecs.length;
+
+  // Normalise type key: "Ambience" → "ambience"
+  const l1TypeKey = primaryType.toLowerCase().replace(" ", "_");
+  const l1Color   = LAYER_TYPE_COLOR[l1TypeKey] ?? "var(--resonance-cyan)";
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Layers className="size-3 text-white/40" />
+          <p className="text-[10px] tracking-cine text-white/40">Audio Stack</p>
+        </div>
+        <span className="text-[9px] font-mono text-white/30">
+          {totalLayers} layer{totalLayers !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-2">
+
+        {/* ── L1 Primary ──────────────────────────────────────────────────── */}
+        <motion.div
+          key="l1"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35 }}
+          className={`rounded-xl border overflow-hidden transition-all duration-300 ${
+            primaryMuted
+              ? "border-white/5 opacity-40"
+              : "border-white/8 bg-white/[0.025]"
+          }`}
+          style={{ borderLeftWidth: 3, borderLeftColor: l1Color }}
+        >
+          {/* top row */}
+          <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+            <span className="text-[9px] font-mono font-semibold text-white/60 w-5 shrink-0">L1</span>
+            <span
+              className="text-[8px] tracking-cine font-mono px-1.5 py-0.5 rounded shrink-0"
+              style={{ background: `color-mix(in oklab, ${l1Color} 20%, transparent)`, color: l1Color }}
+            >
+              {l1TypeKey.replace("_", " ").toUpperCase()}
+            </span>
+            <p className="text-[11px] text-white/80 truncate font-display flex-1">{primaryTitle}</p>
+            {playing && !primaryMuted && (
+              <span className="size-1.5 rounded-full shrink-0 animate-pulse" style={{ background: l1Color }} />
+            )}
+          </div>
+          {/* mini wave */}
+          {playing && !primaryMuted && (
+            <div className="px-3 pb-1">
+              <MiniWave active={true} className="h-4" barColor={l1Color} />
+            </div>
+          )}
+          {/* volume row */}
+          <div className="flex items-center gap-2 px-3 pb-3 pt-1">
+            <button
+              onClick={onPrimaryMute}
+              className={`shrink-0 transition-colors ${primaryMuted ? "text-red-400" : "text-white/30 hover:text-white/60"}`}
+              title={primaryMuted ? "Unmute" : "Mute"}
+            >
+              {primaryMuted ? <VolumeX className="size-3" /> : <Volume2 className="size-3" />}
+            </button>
+            <input
+              type="range" min={0} max={100}
+              value={Math.round(primaryVolume * 100)}
+              disabled={primaryMuted}
+              onChange={(e) => onPrimaryVolume(Number(e.target.value) / 100)}
+              className="flex-1 h-1 appearance-none rounded-full cursor-pointer disabled:cursor-not-allowed"
+              style={{
+                background: primaryMuted
+                  ? "rgba(255,255,255,0.06)"
+                  : `linear-gradient(to right, ${l1Color} ${Math.round(primaryVolume * 100)}%, rgba(255,255,255,0.1) ${Math.round(primaryVolume * 100)}%)`,
+                accentColor: l1Color,
+              }}
+            />
+            <span className="text-[10px] font-mono text-white/40 w-7 text-right shrink-0">
+              {Math.round(primaryVolume * 100)}%
+            </span>
+          </div>
+        </motion.div>
+
+        {/* ── L2 / L3 complementary layers ────────────────────────────────── */}
+        {layerRecs.length === 0 && (
+          <p className="text-[10px] text-white/20 tracking-cine text-center py-2">
+            No complementary layers for this scene type
+          </p>
+        )}
+
+        {layerRecs.map((lr, idx) => {
+          const vol   = layerVolumes[idx] ?? lr.volume;
+          const pct   = Math.round(vol * 100);
+          const color = LAYER_TYPE_COLOR[lr.audio_type] ?? "#94a3b8";
+          const label = lr.caption?.split(".")[0]?.trim() ||
+                        lr.chunk_id.replace(/_chunk_\d+$/, "").replace(/_/g, " ");
+
+          return (
+            <motion.div
+              key={lr.chunk_id || idx}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35, delay: (idx + 1) * 0.07 }}
+              className="rounded-xl border border-white/8 bg-white/[0.015] overflow-hidden"
+              style={{ borderLeftWidth: 3, borderLeftColor: color }}
+            >
+              {/* top row */}
+              <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+                <span className="text-[9px] font-mono font-semibold text-white/50 w-5 shrink-0">
+                  L{idx + 2}
+                </span>
+                <span
+                  className="text-[8px] tracking-cine font-mono px-1.5 py-0.5 rounded shrink-0"
+                  style={{ background: `color-mix(in oklab, ${color} 20%, transparent)`, color }}
+                >
+                  {lr.audio_type.replace(/_/g, " ").toUpperCase()}
+                </span>
+                <p className="text-[11px] text-white/70 truncate font-display flex-1">{label}</p>
+                {playing && (
+                  <span className="size-1.5 rounded-full shrink-0 animate-pulse" style={{ background: color, opacity: 0.7 }} />
+                )}
+              </div>
+              {/* mini wave — quieter layers shown subtly */}
+              {playing && (
+                <div className="px-3 pb-1">
+                  <MiniWave active={true} className="h-3" barColor={color} opacity={0.5} />
+                </div>
+              )}
+              {/* volume row */}
+              <div className="flex items-center gap-2 px-3 pb-3 pt-1">
+                <Volume2 className="size-3 text-white/20 shrink-0" />
+                <input
+                  type="range" min={0} max={100} value={pct}
+                  onChange={(e) => onLayerVolume(idx, Number(e.target.value) / 100)}
+                  className="flex-1 h-1 appearance-none rounded-full cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, ${color} ${pct}%, rgba(255,255,255,0.1) ${pct}%)`,
+                    accentColor: color,
+                  }}
+                />
+                <span className="text-[10px] font-mono text-white/40 w-7 text-right shrink-0">{pct}%</span>
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function MiniWave({
+  className,
+  active = false,
+  barColor,
+  opacity = 1,
+}: {
+  className?: string;
+  active?: boolean;
+  barColor?: string;
+  opacity?: number;
+}) {
   const bars = 28;
   return (
-    <div className={`flex items-end gap-[2px] h-6 ${className ?? ""}`}>
+    <div className={`flex items-end gap-[2px] h-6 ${className ?? ""}`} style={{ opacity }}>
       {Array.from({ length: bars }).map((_, i) => {
         const base = 20 + ((i * 37) % 70);
         return (
           <span
             key={i}
-            className="flex-1 rounded-sm bg-gradient-to-t from-[color:var(--resonance-violet)]/60 to-[color:var(--resonance-cyan)]/90"
+            className="flex-1 rounded-sm"
             style={{
               height: `${base}%`,
+              background: barColor
+                ? barColor
+                : "linear-gradient(to top, color-mix(in oklab, var(--resonance-violet) 60%, transparent), color-mix(in oklab, var(--resonance-cyan) 90%, transparent))",
               animation: active ? `wavepulse ${0.9 + (i % 5) * 0.12}s ease-in-out ${i * 0.04}s infinite alternate` : undefined,
               opacity: active ? 1 : 0.55,
             }}

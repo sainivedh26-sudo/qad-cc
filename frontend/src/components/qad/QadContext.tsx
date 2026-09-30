@@ -33,6 +33,20 @@ type Ctx = {
   rejectingScene: number | null;
   closeReject: () => void;
 
+  // Multi-layer volume controls: sceneId -> [layer1Vol, layer2Vol] (0..1)
+  layerVolumes: Record<number, number[]>;
+  setLayerVolume: (sceneId: number, layerIdx: number, volume: number) => void;
+
+  // Stem (original audio) global volume controls
+  stemVolumes: { vocals: number; noVocals: number };
+  setStemVolumes: (v: { vocals: number; noVocals: number }) => void;
+
+  // Per-scene primary AI audio volume + mute
+  primaryVolumes: Record<number, number>;
+  setPrimaryVolume: (sceneId: number, volume: number) => void;
+  sceneAudioMuted: Record<number, boolean>;
+  toggleSceneMute: (sceneId: number) => void;
+
   // New integrations
   scenes: Scene[];
   exportState: "idle" | "loading" | "done";
@@ -60,14 +74,21 @@ export function QadProvider({ children }: { children: ReactNode }) {
   const [acceptedScenes, setAccepted] = useState<Record<number, boolean>>({});
   const [rejectingScene, setRejecting] = useState<number | null>(null);
   const [exportState, setExportState] = useState<"idle" | "loading" | "done">("idle");
+  // layerVolumes[sceneId][layerIdx] = volume 0..1 (default from backend layer_recs)
+  const [layerVolumes, setLayerVolumesState] = useState<Record<number, number[]>>({});
+  // Stem (original audio) global volumes
+  const [stemVolumes, setStemVolumes] = useState<{ vocals: number; noVocals: number }>({ vocals: 0.8, noVocals: 0.0 });
+  // Per-scene primary AI audio volume (default 0.35) + mute flags
+  const [primaryVolumes, setPrimaryVolumesState] = useState<Record<number, number>>({});
+  const [sceneAudioMuted, setSceneAudioMuted] = useState<Record<number, boolean>>({});
   const timer = useRef<number | null>(null);
 
   const reset = useCallback(() => {
     if (timer.current) window.clearInterval(timer.current);
-    setFile(null); 
-    setFileUrl(null); 
-    setStage("idle"); 
-    setProgress(0); 
+    setFile(null);
+    setFileUrl(null);
+    setStage("idle");
+    setProgress(0);
     setScored(false);
     setScenes(SCENES);
     setExportState("idle");
@@ -76,6 +97,9 @@ export function QadProvider({ children }: { children: ReactNode }) {
     }, {});
     setSelections(resetSel);
     setAccepted({});
+    setStemVolumes({ vocals: 0.8, noVocals: 0.0 });
+    setPrimaryVolumesState({});
+    setSceneAudioMuted({});
   }, []);
 
   const startPipeline = useCallback((f: File) => {
@@ -136,9 +160,8 @@ export function QadProvider({ children }: { children: ReactNode }) {
         
         if (responseScenes && responseScenes.length > 0) {
           setScenes(responseScenes);
-          
-          // Pre-populate selections for the new dynamically generated scenes, ensuring
-          // consecutive scenes do not repeat the exact same audio file if alternatives exist.
+
+          // Pre-populate selections (avoid consecutive duplicate source files)
           const newSel: Record<number, string> = {};
           let lastSourcePath = "";
           responseScenes.forEach((s) => {
@@ -149,6 +172,15 @@ export function QadProvider({ children }: { children: ReactNode }) {
             }
           });
           setSelections(newSel);
+
+          // Pre-populate layerVolumes from backend defaults
+          const newVols: Record<number, number[]> = {};
+          responseScenes.forEach((s) => {
+            if (s.layer_recs && s.layer_recs.length > 0) {
+              newVols[s.id] = s.layer_recs.map((lr) => lr.volume);
+            }
+          });
+          setLayerVolumesState(newVols);
           setScored(true);
         }
        // Keep the local blob URL for editing
@@ -161,9 +193,9 @@ export function QadProvider({ children }: { children: ReactNode }) {
     if (exportState !== "idle") return;
     setExportState("loading");
     console.log("[QadContext] Exporting video with active selections:", selections);
-    
+
     try {
-      const res = await composeVideoServer({ data: selections });
+      const res = await composeVideoServer({ data: { selections, layerVolumes, stemVolumes, primaryVolumes, sceneAudioMuted } });
       if (res.success) {
         setExportState("done");
         
@@ -188,7 +220,7 @@ export function QadProvider({ children }: { children: ReactNode }) {
       console.error("[QadContext] Video composition failed:", err);
       setExportState("idle");
     }
-  }, [exportState, selections]);
+  }, [exportState, selections, layerVolumes, stemVolumes, primaryVolumes, sceneAudioMuted]);
 
   const toggleScore = useCallback(() => setScored((s) => !s), []);
 
@@ -206,12 +238,32 @@ export function QadProvider({ children }: { children: ReactNode }) {
   }, []);
   const closeReject = useCallback(() => setRejecting(null), []);
 
+  const setLayerVolume = useCallback((sceneId: number, layerIdx: number, volume: number) => {
+    setLayerVolumesState((prev) => {
+      const cur = prev[sceneId] ? [...prev[sceneId]] : [];
+      cur[layerIdx] = Math.max(0, Math.min(1, volume));
+      return { ...prev, [sceneId]: cur };
+    });
+  }, []);
+
+  const setPrimaryVolume = useCallback((sceneId: number, volume: number) => {
+    setPrimaryVolumesState((prev) => ({ ...prev, [sceneId]: Math.max(0, Math.min(1, volume)) }));
+  }, []);
+
+  const toggleSceneMute = useCallback((sceneId: number) => {
+    setSceneAudioMuted((prev) => ({ ...prev, [sceneId]: !prev[sceneId] }));
+  }, []);
+
   return (
     <QadCtx.Provider value={{
       file, fileUrl, stage, progress, scored, ambientOn, setAmbient, startPipeline, toggleScore, reset,
       prompt, setPrompt,
       selections, acceptedScenes, selectAudio, acceptAudio, rejectAudio,
       rejectingScene, closeReject,
+      layerVolumes, setLayerVolume,
+      stemVolumes, setStemVolumes,
+      primaryVolumes, setPrimaryVolume,
+      sceneAudioMuted, toggleSceneMute,
       scenes, exportState, exportVideo,
     }}>
       {children}

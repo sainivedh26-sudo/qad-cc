@@ -10,13 +10,27 @@ export type AudioRec = {
   chunk_end_sec?: number;
 };
 
+export type LayerRec = {
+  layer: number;          // 1 = secondary, 2 = tertiary
+  audio_type: string;
+  chunk_id: string;
+  source_path: string;
+  chunk_start_sec: number;
+  chunk_end_sec: number;
+  caption: string;
+  score: number;
+  energy: number;
+  volume: number;         // 0..1 default from backend; user can override
+};
+
 export type Scene = {
   id: number;
   label: string;
-  mood: string;       // emotional feel title e.g. "Melancholic Drift"
+  mood: string;           // emotional feel title e.g. "Melancholic Drift"
   tone: string;
-  energy: number;     // 0..1
-  recs: AudioRec[];   // top 5 audio recommendations
+  energy: number;         // 0..1
+  recs: AudioRec[];       // top-5 primary audio recommendations
+  layer_recs?: LayerRec[]; // complementary layer tracks (Discovery + Recommend)
   start_sec?: number;
   end_sec?: number;
 };

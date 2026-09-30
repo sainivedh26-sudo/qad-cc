@@ -10,7 +10,7 @@ The ingestion side is a Python pipeline: BBC WAV files are chunked by type (ambi
 
 # Architecture
 
-<img width="2847" height="1456" alt="shapes at 26-06-02 00 52 18" src="https://github.com/user-attachments/assets/71dbaa71-e60e-4966-9a52-af3fe7a895ed" />
+<img width="2847" height="1456" alt="shapes at 26-06-02 00 52 18" src="https://github.com/user-attachments/assets/c91f9bc5-3d9f-4d88-88c6-6f804be9539c" />
 
 ---
 
